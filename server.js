@@ -2,15 +2,12 @@ require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const twilio = require('twilio');
-const Anthropic = require('@anthropic-ai/sdk');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
 async function loadData(uid) {
@@ -54,6 +51,56 @@ function fmt(n) {
 
 const MONTH_NAMES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 
+async function interpretMessage(message, data) {
+  const { month, year } = currentMonth();
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'llama3-8b-8192',
+      max_tokens: 300,
+      temperature: 0.1,
+      messages: [
+        {
+          role: 'system',
+          content: `Sos el asistente financiero de Orbe. Interpretás mensajes y devolvés SOLO un JSON sin texto adicional.
+Fecha: ${today()} | Mes: ${MONTH_NAMES[month]} ${year}
+
+ACCIONES POSIBLES:
+{"type":"agregar_transaccion","txType":"gasto|ingreso|sueldo","description":"...","amount":1234,"category":"...","date":"YYYY-MM-DD"}
+{"type":"consultar_balance"}
+{"type":"ultimas_transacciones"}
+{"type":"consultar_presupuesto"}
+{"type":"consultar_ahorros"}
+{"type":"consultar_deudas"}
+{"type":"consultar_vencimientos"}
+{"type":"agregar_evento","title":"...","day":15,"eventType":"vencimiento|pago|recordatorio"}
+{"type":"eliminar_evento","keyword":"..."}
+{"type":"resumen_general"}
+
+CATEGORÍAS: ${JSON.stringify(Object.keys(data.categories||{}))}
+REGLAS:
+- "gasté/pagué/compré" → txType "gasto"
+- "cobré/sueldo/me pagaron" → txType "sueldo"
+- "en X días/semanas" → calculá fecha exacta desde hoy
+- Devolvé SOLO el JSON, nada más`
+        },
+        { role: 'user', content: message }
+      ],
+    }),
+  });
+  const result = await response.json();
+  const text = result.choices[0].message.content.trim();
+  try { return JSON.parse(text); } catch {
+    const match = text.match(/\{[\s\S]*\}/);
+    if (match) return JSON.parse(match[0]);
+    return { type: 'unknown' };
+  }
+}
+
 async function processAction(action, data, userId) {
   const { month, year } = currentMonth();
 
@@ -69,8 +116,8 @@ async function processAction(action, data, userId) {
         savingsId: '',
       };
       await saveData(userId, { ...data, transactions: [...data.transactions, tx] });
-      const emoji = tx.type === 'gasto' ? '💸' : '💰';
       const label = tx.type === 'gasto' ? 'Gasto' : tx.type === 'sueldo' ? 'Sueldo' : 'Ingreso';
+      const emoji = tx.type === 'gasto' ? '💸' : '💰';
       return `${emoji} *${label} registrado*\n\n📝 ${tx.description}\n💵 ${fmt(tx.amount)}\n📅 ${tx.date}`;
     }
 
@@ -153,38 +200,6 @@ async function processAction(action, data, userId) {
   }
 }
 
-async function interpretMessage(message, data) {
-  const { month, year } = currentMonth();
-  const response = await anthropic.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 300,
-    system: `Sos el asistente financiero de Orbe. Interpretás mensajes y devolvés SOLO un JSON.
-Fecha: ${today()} | Mes: ${MONTH_NAMES[month]} ${year}
-
-ACCIONES:
-{"type":"agregar_transaccion","txType":"gasto|ingreso|sueldo","description":"...","amount":1234,"category":"...","date":"YYYY-MM-DD"}
-{"type":"consultar_balance"}
-{"type":"ultimas_transacciones"}
-{"type":"consultar_presupuesto"}
-{"type":"consultar_ahorros"}
-{"type":"consultar_deudas"}
-{"type":"consultar_vencimientos"}
-{"type":"agregar_evento","title":"...","day":15,"eventType":"vencimiento|pago|recordatorio"}
-{"type":"eliminar_evento","keyword":"..."}
-{"type":"resumen_general"}
-
-CATEGORÍAS: ${JSON.stringify(Object.keys(data.categories||{}))}
-REGLAS: "gasté/pagué/compré"→gasto | "cobré/sueldo"→sueldo | "en X días/semanas"→calculá fecha | devolvé SOLO JSON`,
-    messages: [{ role: 'user', content: message }],
-  });
-  const text = response.content[0].text.trim();
-  try { return JSON.parse(text); } catch {
-    const match = text.match(/\{[\s\S]*\}/);
-    if (match) return JSON.parse(match[0]);
-    return { type: 'unknown' };
-  }
-}
-
 app.post('/webhook', async (req, res) => {
   const twiml = new twilio.twiml.MessagingResponse();
   try {
@@ -198,7 +213,6 @@ app.post('/webhook', async (req, res) => {
 
     console.log(`📩 ${from}: ${incomingMsg}`);
 
-    // Activación desde la app
     if (incomingMsg.startsWith('ORBE_ACTIVATE:')) {
       const userId = incomingMsg.replace('ORBE_ACTIVATE:', '').trim();
       if (userId) {
@@ -208,7 +222,6 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-    // Buscar usuario por teléfono
     const userId = await getUserIdByPhone(from);
     if (!userId) {
       twiml.message('👋 Para usar Orbe por WhatsApp, abrí la app y tocá *"Conectar WhatsApp"* 📱');
@@ -227,13 +240,13 @@ app.post('/webhook', async (req, res) => {
     twiml.message(respuesta);
 
   } catch (err) {
-    console.error('❌ Error:', err);
+    console.error('❌ Error:', err.message);
     twiml.message('❌ Ocurrió un error. Intentá de nuevo.');
   }
   res.type('text/xml').send(twiml.toString());
 });
 
-app.get('/', (req, res) => res.json({ status: 'ok', app: 'Orbe Bot', version: '2.0.0' }));
+app.get('/', (req, res) => res.json({ status: 'ok', app: 'Orbe Bot', version: '3.0.0' }));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Orbe Bot v2 en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Orbe Bot v3 (Groq) en puerto ${PORT}`));
