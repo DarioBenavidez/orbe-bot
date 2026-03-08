@@ -1,4 +1,3 @@
-// Orbe Bot v4.1
 require('dotenv').config();
 const fetch = require('node-fetch');
 const express = require('express');
@@ -129,6 +128,8 @@ REGLAS:
 - "cobré/sueldo/me pagaron" → txType "sueldo" o "ingreso"
 - "me debe/le presté/fiado" → agregar_prestamo
 - "X me pagó/abonó" → registrar_pago_prestamo
+- "ya pagué X", "pagué X", "abonó X" → txType "gasto" con la descripción de lo que pagó
+- Si dice "ya pagué" sin monto, preguntale cuánto fue con type "conversacion"
 - Contenido obsceno o inapropiado → conversacion con respuesta amigable redirigiendo a finanzas
 - Si no entendés → unknown
 - Devolvé SOLO el JSON`;
@@ -388,7 +389,19 @@ async function checkAndSendNotifications() {
     console.error('Error notificaciones:', err.message);
   }
 }
-setInterval(checkAndSendNotifications, 60 * 60 * 1000);
+// Notificación una vez al día a las 9am Argentina
+function scheduleDaily() {
+  const now = new Date(new Date().getTime() - 3 * 60 * 60 * 1000);
+  const next9am = new Date(now);
+  next9am.setHours(9, 0, 0, 0);
+  if (now >= next9am) next9am.setDate(next9am.getDate() + 1);
+  const msUntil9am = next9am - now;
+  setTimeout(() => {
+    checkAndSendNotifications();
+    setInterval(checkAndSendNotifications, 24 * 60 * 60 * 1000);
+  }, msUntil9am);
+}
+scheduleDaily();
 
 // ── Webhook ────────────────────────────────────────────────
 app.post('/webhook', async (req, res) => {
