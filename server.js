@@ -123,7 +123,7 @@ ACCIONES DISPONIBLES:
 CATEGORÍAS: ${JSON.stringify(Object.keys(data.categories||{}))}
 
 REGLAS:
-- "hola/buenas/hey/buen día" → saludo
+- Cualquier saludo como "hola", "buenas", "hey", "buen día", "buenos días", "buenas tardes", "buenas noches", "hola orbe", "qué tal", "cómo estás" → SIEMPRE usar type "saludo"
 - "gasté/pagué/compré" → txType "gasto"
 - "cobré/sueldo/me pagaron" → txType "sueldo" o "ingreso"
 - "me debe/le presté/fiado" → agregar_prestamo
