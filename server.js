@@ -330,6 +330,57 @@ async function processAction(action, data, userId, userName) {
       return `✅ Listo, desactivé ese gasto fijo.`;
     }
 
+    case 'pagar_y_eliminar_evento': {
+      const descLower = (action.description || '').toLowerCase();
+      const amount = parseFloat(action.amount);
+      let newData = { ...data };
+      const extras = [];
+
+      // 1. Registrar el gasto
+      const tx = {
+        id: Date.now().toString(),
+        type: 'gasto',
+        description: action.description || 'Pago',
+        amount,
+        category: action.category || 'Otros',
+        date: action.date || today(),
+        savingsId: '',
+      };
+      newData.transactions = [...newData.transactions, tx];
+
+      // 2. Eliminar evento del calendario si coincide
+      const eventosBefore = newData.events || [];
+      newData.events = eventosBefore.filter(ev =>
+        !ev.title.toLowerCase().includes(descLower) &&
+        !descLower.includes(ev.title.toLowerCase())
+      );
+      if (newData.events.length < eventosBefore.length) {
+        extras.push('🗑️ Eliminé el vencimiento del calendario.');
+      }
+
+      // 3. Descontar de deuda si coincide
+      const deudaIdx = (newData.debts || []).findIndex(d =>
+        d.name.toLowerCase().includes(descLower) ||
+        descLower.includes(d.name.toLowerCase())
+      );
+      if (deudaIdx !== -1) {
+        const deuda = { ...newData.debts[deudaIdx] };
+        deuda.remaining = Math.max(0, deuda.remaining - amount);
+        if (deuda.remaining === 0) {
+          newData.debts = newData.debts.filter((_, i) => i !== deudaIdx);
+          extras.push(`✅ La deuda *${deuda.name}* quedó saldada y la cerré.`);
+        } else {
+          newData.debts = newData.debts.map((d, i) => i === deudaIdx ? deuda : d);
+          extras.push(`💳 Le quedan ${fmt(deuda.remaining)} a la deuda *${deuda.name}*.`);
+        }
+      }
+
+      await saveData(userId, newData);
+      let resp = `💸 *Pago registrado!*\n\n📝 ${tx.description}\n💵 ${fmt(tx.amount)}\n📅 ${tx.date}`;
+      if (extras.length) resp += '\n\n' + extras.join('\n');
+      return resp;
+    }
+
     case 'resumen_general': {
       const txs = data.transactions.filter(t => { const {month:m,year:y}=parseDateParts(t.date); return m===month&&y===year; });
       const ingresos = txs.filter(t=>t.type==='ingreso'||t.type==='sueldo').reduce((a,t)=>a+t.amount,0);
@@ -453,16 +504,26 @@ app.post('/webhook', async (req, res) => {
     if (esSaludo) {
       action = { type: 'saludo' };
     } else if (esPago) {
-      // Extraer descripción del pago
-      const desc = incomingMsg.replace(/ya pagu[eé]|pagu[eé] (el|la|los|las)|abon[oó]/gi, '').trim();
       // Buscar monto en el mensaje
       const montoMatch = incomingMsg.match(/\$?([\d.,]+)/);
+      // Extraer descripción limpia: sacar palabras de pago, artículos y el monto
+      let desc = incomingMsg
+        .replace(/ya pagu[eé]|pagu[eé]|abon[oó]/gi, '')
+        .replace(/\b(el|la|los|las|un|una)\b/gi, '')
+        .replace(/\$?[\d.,]+/g, '')
+        .trim();
       if (montoMatch) {
-        const amount = parseFloat(montoMatch[1].replace('.','').replace(',','.'));
-        action = { type: 'agregar_transaccion', txType: 'gasto', description: desc || 'Pago', amount, category: 'Otros', date: today() };
+        const amount = parseFloat(montoMatch[1].replace(/\./g,'').replace(',','.'));
+        action = { type: 'pagar_y_eliminar_evento', description: desc || 'Pago', amount, category: 'Otros', date: today() };
       } else {
         action = { type: 'conversacion', respuesta: '¿Cuánto fue el pago? Decime el monto y lo registro como gasto 💸' };
       }
+    } else if (/venc[ei]|vence|vencimiento|qué.*pagar|que.*pagar|que.*venc|qué.*venc/i.test(incomingMsg)) {
+      action = { type: 'consultar_vencimientos' };
+    } else if (/balance|saldo|cuánto.*tengo|cuanto.*tengo/i.test(incomingMsg)) {
+      action = { type: 'consultar_balance' };
+    } else if (/resumen|cómo.*voy|como.*voy/i.test(incomingMsg)) {
+      action = { type: 'resumen_general' };
     } else {
       action = await interpretMessage(incomingMsg, data, history);
     }
