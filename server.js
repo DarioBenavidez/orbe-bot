@@ -444,7 +444,28 @@ app.post('/webhook', async (req, res) => {
     const saludos = ['hola', 'buenas', 'hey', 'buen dia', 'buen día', 'buenos dias', 'buenos días', 'buenas tardes', 'buenas noches', 'que tal', 'qué tal', 'como estas', 'cómo estás'];
     const msgLower = incomingMsg.toLowerCase().trim();
     const esSaludo = saludos.some(s => msgLower === s || msgLower.startsWith(s + ' ') || msgLower.endsWith(' ' + s) || msgLower.includes(s));
-    const action = esSaludo ? { type: 'saludo' } : await interpretMessage(incomingMsg, data, history);
+
+    // Detección directa de pagos — siempre son gastos
+    const palabrasPago = ['ya pague', 'ya pagué', 'pague el', 'pagué el', 'pague la', 'pagué la', 'abone', 'abonné', 'abonó'];
+    const esPago = palabrasPago.some(s => msgLower.startsWith(s) || msgLower.includes(s));
+
+    let action;
+    if (esSaludo) {
+      action = { type: 'saludo' };
+    } else if (esPago) {
+      // Extraer descripción del pago
+      const desc = incomingMsg.replace(/ya pagu[eé]|pagu[eé] (el|la|los|las)|abon[oó]/gi, '').trim();
+      // Buscar monto en el mensaje
+      const montoMatch = incomingMsg.match(/\$?([\d.,]+)/);
+      if (montoMatch) {
+        const amount = parseFloat(montoMatch[1].replace('.','').replace(',','.'));
+        action = { type: 'agregar_transaccion', txType: 'gasto', description: desc || 'Pago', amount, category: 'Otros', date: today() };
+      } else {
+        action = { type: 'conversacion', respuesta: '¿Cuánto fue el pago? Decime el monto y lo registro como gasto 💸' };
+      }
+    } else {
+      action = await interpretMessage(incomingMsg, data, history);
+    }
     console.log('🤖 Acción:', JSON.stringify(action));
     const respuesta = await processAction(action, data, userId, userName);
 
