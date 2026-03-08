@@ -425,7 +425,12 @@ app.post('/webhook', async (req, res) => {
     }
 
     const history = await loadHistory(from);
-    const action = await interpretMessage(incomingMsg, data, history);
+
+    // Detección directa de saludos sin depender de IA
+    const saludos = ['hola', 'buenas', 'hey', 'buen dia', 'buen día', 'buenos dias', 'buenos días', 'buenas tardes', 'buenas noches', 'que tal', 'qué tal', 'como estas', 'cómo estás'];
+    const msgLower = incomingMsg.toLowerCase().trim();
+    const esSaludo = saludos.some(s => msgLower === s || msgLower.startsWith(s + ' ') || msgLower.endsWith(' ' + s) || msgLower.includes(s));
+    const action = esSaludo ? { type: 'saludo' } : await interpretMessage(incomingMsg, data, history);
     console.log('🤖 Acción:', JSON.stringify(action));
     const respuesta = await processAction(action, data, userId, userName);
 
